@@ -25,16 +25,30 @@ jobs:
 
       - name: Fetch and Record Gym Data
         run: |
-          # 1. Fetch raw data
-          RAW_DATA=$(curl -s https://www.daansports.com.tw/zh_TW/onsitenum)
+          echo "Starting data fetch..."
           
-          # 2. Parse numbers
-          CURRENT=$(echo "$RAW_DATA" | grep -oP '健身房\s*\K\d+')
-          MAX=$(echo "$RAW_DATA" | grep -oP '健身房\s*\d+\s*人\/\s*容留\s*\K\d+')
+          # 1. Fetch raw data with User-Agent
+          RAW_DATA=$(curl -sL "https://www.daansports.com.tw/zh_TW/onsitenum" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
           
+          # Debug: Print first 200 chars of raw data
+          echo "Raw Data Preview: ${RAW_DATA:0:200}"
+
+          # 2. Parse numbers using more robust sed approach
+          # We look for "健身房 XX 人" and "容留 YY 人"
+          CURRENT=$(echo "$RAW_DATA" | sed -n 's/.*健身房[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p')
+          MAX=$(echo "$RAW_DATA" | sed -n 's/.*健身房.*人\s*\/\s*容留[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p')
+          
+          # Fallback if the specific format with / fails
+          if [ -z "$MAX" ]; then
+            MAX=$(echo "$RAW_DATA" | sed -n 's/.*健身房.*容留[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p')
+          fi
+
+          echo "Parsed: CURRENT=$CURRENT, MAX=$MAX"
+
           if [ -z "$CURRENT" ] || [ -z "$MAX" ]; then
-            echo "::warning title=Parser Error::Could not extract gym numbers"
-            exit 0 # Don't fail the whole build if site is down
+            echo "::error::Could not parse gym data. Site might have changed structure."
+            exit 1 # We want to know it failed
           fi
 
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
@@ -44,21 +58,28 @@ jobs:
           echo "{\"gym\": {\"current\": $CURRENT, \"max\": $MAX}, \"timestamp\": \"$TIMESTAMP\"}" > public/data.json
 
           # 4. Append to history.json (using jq)
-          # Initialize history.json if empty/missing
-          if [ ! -f public/history.json ]; then echo "[]" > public/history.json; fi
+          if [ ! -f public/history.json ] || [ ! -s public/history.json ]; then 
+            echo "[]" > public/history.json
+          fi
           
-          # Add new record and trim to last 336 records (7 days * 48 half-hour slots)
-          TEMP_HISTORY=$(jq --arg cur "$CURRENT" --arg time "$TIMESTAMP" --arg lbl "$DATE_LABEL" \
-            '. + [{current: ($cur|tonumber), timestamp: $time, label: $lbl}] | tail(336)' public/history.json)
-          echo "$TEMP_HISTORY" > public/history.json
+          # Add new record and trim
+          jq --arg cur "$CURRENT" --arg time "$TIMESTAMP" --arg lbl "$DATE_LABEL" \
+             '. + [{current: ($cur|tonumber), timestamp: $time, label: $lbl}] | .[-336:]' public/history.json > public/history.tmp && mv public/history.tmp public/history.json
+          
+          echo "Data logging complete."
 
       - name: Commit Data Changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add public/data.json public/history.json
-          git commit -m "chore: auto-update gym logs [skip ci]" || echo "No changes to commit"
-          git push origin main
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes in data files."
+          else
+            git commit -m "chore: auto-update gym logs [skip ci]"
+            git push origin main
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
