@@ -1,0 +1,42 @@
+name: Update Gym Data
+
+on:
+  schedule:
+    - cron: '*/20 * * * *' # Run every 20 minutes
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Fetch and Parse Gym Data
+        run: |
+          # Fetch data
+          RAW_DATA=$(curl -s https://www.daansports.com.tw/zh_TW/onsitenum)
+          
+          # Extract Gym numbers (健身房 XX 人/ 容留 80 人)
+          # Use grep and sed to find the numbers
+          CURRENT=$(echo "$RAW_DATA" | grep -oP '健身房\s*\K\d+')
+          MAX=$(echo "$RAW_DATA" | grep -oP '健身房\s*\d+\s*人\/\s*容留\s*\K\d+')
+          
+          if [ -z "$CURRENT" ] || [ -z "$MAX" ]; then
+            echo "Error: Could not parse gym data."
+            exit 1
+          fi
+
+          # Update the JSON file
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "{\"gym\": {\"current\": $CURRENT, \"max\": $MAX}, \"timestamp\": \"$TIMESTAMP\"}" > frontend/public/data.json
+          
+          echo "Updated Data: $CURRENT/$MAX at $TIMESTAMP"
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add frontend/public/data.json
+          git commit -m "chore: update gym occupancy data" || echo "No changes to commit"
+          git push
