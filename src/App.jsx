@@ -1,251 +1,711 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { Activity, RefreshCw, Clock, TrendingUp, BarChart3, AlertCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  ReferenceLine 
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, ReferenceLine
 } from 'recharts';
 
-function App() {
-  const [gymData, setGymData] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+// ─── helpers ────────────────────────────────────────────────────────────────
 
-  // Fetch from static JSON files (updated by GitHub Actions)
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      // Fetch current occupancy
-      const resData = await axios.get('./data.json?v=' + new Date().getTime());
-      setGymData(resData.data);
-      
-      // Fetch history log
-      const resHistory = await axios.get('./history.json?v=' + new Date().getTime());
-      setHistory(resHistory.data || []);
-      
-      setError(null);
-    } catch (err) {
-      console.error('Failed to fetch data:', err);
-      setError('同步數據中...');
-    } finally {
-      setLoading(false);
-    }
-  };
+const OPEN_HOUR  = 6;
+const CLOSE_HOUR = 22;
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+function isGymOpen() {
+  const now = new Date();
+  const h = now.getHours();
+  return h >= OPEN_HOUR && h < CLOSE_HOUR;
+}
 
-  // Helper to calculate color and level
-  const getStatus = (current, max) => {
-    const ratio = current / max;
-    if (ratio < 0.4) return { label: '舒適', color: '#4ade80', class: 'status-green' };
-    if (ratio < 0.8) return { label: '適中', color: '#facc15', class: 'status-yellow' };
-    return { label: '擁擠', color: '#f87171', class: 'status-red' };
-  };
+function nextOpenTime() {
+  const now = new Date();
+  const open = new Date(now);
+  if (now.getHours() >= CLOSE_HOUR) {
+    open.setDate(open.getDate() + 1);
+  }
+  open.setHours(OPEN_HOUR, 0, 0, 0);
+  return open;
+}
 
-  // Custom Chart Tooltip
-  const CustomTooltip = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="glass-card p-3 border border-white/20 shadow-2xl scale-105 transition-transform">
-          <p className="text-xs text-gray-400 mb-1 font-light">{payload[0].payload.label}</p>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-sm" />
-            <p className="text-lg font-bold gradient-text m-0">{payload[0].value} 人</p>
-          </div>
-        </div>
-      );
-    }
-    return null;
-  };
+function formatCountdown(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function getOccupancyLevel(current, max) {
+  const pct = current / max;
+  if (pct < 0.4) return { label: '舒適', key: 'low',  pct };
+  if (pct < 0.75) return { label: '適中', key: 'mid',  pct };
+  return             { label: '擁擠', key: 'high', pct };
+}
+
+// ─── sub-components ─────────────────────────────────────────────────────────
+
+function OccupancyRing({ current, max, size = 200 }) {
+  const r = size / 2 - 16;
+  const circ = 2 * Math.PI * r;
+  const pct  = Math.min(current / max, 1);
+  const dash = pct * circ;
+  const level = getOccupancyLevel(current, max);
+
+  const color = level.key === 'low' ? '#22c55e'
+              : level.key === 'mid' ? '#f59e0b'
+              :                       '#ef4444';
 
   return (
-    <div className="min-h-screen p-4 md:p-10 flex flex-col items-center">
-      {/* Header */}
-      <motion.header 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-10 text-center w-full max-w-4xl flex justify-between items-center"
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ display:'block', margin:'0 auto' }}>
+      {/* track */}
+      <circle
+        cx={size/2} cy={size/2} r={r}
+        fill="none"
+        stroke="rgba(255,255,255,0.06)"
+        strokeWidth={12}
+      />
+      {/* fill */}
+      <circle
+        cx={size/2} cy={size/2} r={r}
+        fill="none"
+        stroke={color}
+        strokeWidth={12}
+        strokeLinecap="round"
+        strokeDasharray={`${dash} ${circ}`}
+        strokeDashoffset={circ * 0.25}
+        style={{ transition: 'stroke-dasharray 1s cubic-bezier(.4,0,.2,1), stroke 0.5s' }}
+      />
+      {/* number */}
+      <text
+        x={size/2} y={size/2 - 10}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fill="white"
+        fontFamily="'DM Mono', monospace"
+        fontSize={size * 0.22}
+        fontWeight="500"
       >
-        <div className="text-left">
-          <h1 className="text-4xl font-bold gradient-text m-0 tracking-tight flex items-center gap-3">
-              大安運動中心 <TrendingUp className="text-cyan-400" size={32} />
-          </h1>
-          <p className="text-gray-500 mt-2 font-light text-sm uppercase tracking-widest">Real-Time Traffic Dashboard</p>
-        </div>
-        <button 
-            onClick={fetchData} 
-            className="p-4 glass-card rounded-2xl hover:scale-105 active:scale-95 transition-all"
-        >
-           <RefreshCw size={24} className={loading ? 'animate-spin' : ''} />
-        </button>
-      </motion.header>
+        {current}
+      </text>
+      <text
+        x={size/2} y={size/2 + 24}
+        textAnchor="middle"
+        fill="rgba(255,255,255,0.45)"
+        fontFamily="'DM Sans', sans-serif"
+        fontSize={13}
+      >
+        / {max} 人
+      </text>
+      {/* label */}
+      <rect
+        x={size/2 - 26} y={size/2 + 46}
+        width={52} height={20}
+        rx={10}
+        fill={color + '28'}
+      />
+      <text
+        x={size/2} y={size/2 + 56}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fill={color}
+        fontFamily="'DM Sans', sans-serif"
+        fontSize={11}
+        fontWeight="500"
+      >
+        {level.label}
+      </text>
+    </svg>
+  );
+}
 
-      <div className="w-full max-w-5xl space-y-8">
-        {/* Main Stats and Chart Container */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Left: Real-time Card */}
-          <motion.div 
-            initial={{ opacity: 0, x: -30 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="glass-card p-8 flex flex-col justify-between"
-          >
-            <div className="flex items-center gap-3 mb-10">
-                <div className="p-3 bg-cyan-500/10 rounded-xl">
-                    <Activity className="text-cyan-400" size={24} />
-                </div>
-                <h2 className="text-lg font-semibold tracking-wide m-0">當前健身房</h2>
-            </div>
+function PulsingDot({ color = '#22c55e' }) {
+  return (
+    <span style={{ position:'relative', display:'inline-flex', width:10, height:10 }}>
+      <span style={{
+        position:'absolute', inset:0,
+        borderRadius:'50%',
+        background: color,
+        opacity: 0.4,
+        animation: 'ping 1.5s cubic-bezier(0,0,0.2,1) infinite',
+      }} />
+      <span style={{
+        position:'relative', display:'inline-flex',
+        width:10, height:10,
+        borderRadius:'50%',
+        background: color,
+      }} />
+    </span>
+  );
+}
 
-            {!loading && gymData?.gym ? (
-              <div className="space-y-8">
-                <div>
-                  <div className="flex justify-between items-end mb-4">
-                    <span className="text-7xl font-bold tracking-tighter tabular-nums leading-none">
-                        {gymData.gym.current}
-                    </span>
-                    <span className="text-gray-500 font-medium text-xl mb-1 ml-2">/ {gymData.gym.max} 人</span>
-                  </div>
-                  
-                  <div className="progress-container h-3 shadow-inner">
-                    <motion.div 
-                        className="progress-bar shadow-sm" 
-                        initial={{ width: 0 }}
-                        animate={{ 
-                            width: `${Math.min((gymData.gym.current / gymData.gym.max) * 100, 100)}%`,
-                            backgroundColor: getStatus(gymData.gym.current, gymData.gym.max).color
-                        }}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl">
-                    <span className={`status-badge text-xs px-5 py-2 ${getStatus(gymData.gym.current, gymData.gym.max).class}`}>
-                        {getStatus(gymData.gym.current, gymData.gym.max).label}
-                    </span>
-                    <div className="text-[10px] text-gray-500 flex flex-col items-end">
-                        <span className="flex items-center gap-1 font-semibold uppercase tracking-tighter"><Clock size={12} /> Last Sync</span>
-                        <span className="mt-1">{gymData.timestamp ? new Date(gymData.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '--:--:--'}</span>
-                    </div>
-                </div>
-              </div>
-            ) : (
-              <div className="h-48 flex flex-col items-center justify-center text-gray-600 gap-4">
-                  <RefreshCw size={48} className="animate-spin opacity-20" />
-                  <p className="animate-pulse font-light uppercase tracking-widest text-xs">Synchronizing...</p>
-              </div>
-            )}
-          </motion.div>
-
-          {/* Right: Trend Chart Card */}
-          <motion.div 
-            initial={{ opacity: 0, x: 30 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="glass-card p-8 lg:col-span-2 flex flex-col min-h-[400px]"
-          >
-            <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3">
-                    <div className="p-3 bg-indigo-500/10 rounded-xl">
-                        <BarChart3 className="text-indigo-400" size={24} />
-                    </div>
-                    <div>
-                        <h2 className="text-lg font-semibold tracking-wide m-0">人潮波動統計</h2>
-                        <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">7-Day Usage Intensity</p>
-                    </div>
-                </div>
-            </div>
-
-            <div className="flex-1 w-full min-h-[250px] relative">
-                {history.length > 2 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                            <defs>
-                                <linearGradient id="colorCurrent" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#4facfe" stopOpacity={0.4}/>
-                                    <stop offset="95%" stopColor="#00f2fe" stopOpacity={0}/>
-                                </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
-                            <XAxis 
-                                dataKey="label" 
-                                hide={history.length > 50} 
-                                axisLine={false} 
-                                tickLine={false} 
-                                tick={{ fontSize: 10, fill: '#666' }} 
-                            />
-                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666' }} />
-                            <Tooltip content={<CustomTooltip />} cursor={{ stroke: 'rgba(79, 172, 254, 0.4)', strokeWidth: 1 }} />
-                            <Area 
-                                type="monotone" 
-                                dataKey="current" 
-                                stroke="#4facfe" 
-                                strokeWidth={3}
-                                fillOpacity={1} 
-                                fill="url(#colorCurrent)" 
-                                animationDuration={1500}
-                            />
-                            <ReferenceLine y={40} label={{ position: 'right', value: '平衡點', fill: '#444', fontSize: 10 }} stroke="#ffffff08" strokeDasharray="3 3" />
-                        </AreaChart>
-                    </ResponsiveContainer>
-                ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 gap-4">
-                        <div className="p-6 bg-white/5 rounded-full relative overflow-hidden">
-                            <motion.div 
-                                className="absolute inset-0 bg-cyan-500/10"
-                                animate={{ x: ['100%', '-100%'] }}
-                                transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
-                            />
-                            <BarChart3 size={48} className="opacity-10" />
-                        </div>
-                        <div className="text-center">
-                            <p className="text-sm font-light">正在累積首日數據統計...</p>
-                            <p className="text-[10px] text-gray-600 mt-2 flex items-center gap-1 justify-center">
-                                <AlertCircle size={10} /> 預計後天可產出完整週趨勢圖表
-                            </p>
-                        </div>
-                    </div>
-                )}
-            </div>
-          </motion.div>
-        </div>
-
-        {/* Info Banner */}
-        <motion.div 
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.5 }}
-            className="flex flex-col md:flex-row items-center gap-6 p-6 glass-card bg-cyan-500/5 border-cyan-500/10"
-        >
-            <div className="p-4 bg-cyan-500/10 rounded-2xl flex-shrink-0">
-                <BarChart3 className="text-cyan-400" size={32} />
-            </div>
-            <div className="flex-1 text-center md:text-left">
-                <h3 className="text-lg font-bold m-0 gradient-text">智慧人潮分析系統</h3>
-                <p className="text-sm text-gray-400 mt-2 font-light leading-relaxed">
-                    本系統每 30 分鐘自動對大安運動中心進行數據採樣，並透過 GitHub 行動工作流記錄歷史庫存。
-                    圖表可幫助您避開尖峰時段（一般為 18:00 - 21:00），優化您的運動體驗。
-                </p>
-            </div>
-        </motion.div>
+function CustomTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{
+      background: 'rgba(15,15,20,0.92)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 10,
+      padding: '8px 14px',
+      fontSize: 13,
+    }}>
+      <div style={{ color:'rgba(255,255,255,0.5)', marginBottom:4, fontSize:11 }}>
+        {payload[0].payload.label}
       </div>
-
-      <footer className="mt-20 mb-10 py-10 text-center border-t border-white/5 w-full max-w-4xl">
-          <p className="text-gray-700 text-xs font-light tracking-[0.3em] uppercase">
-             © 2024 Daan Monitor System | Powered by Antigravity AI
-          </p>
-      </footer>
+      <div style={{ color:'white', fontFamily:"'DM Mono', monospace", fontWeight:500 }}>
+        {payload[0].value} 人
+      </div>
     </div>
   );
 }
 
-export default App;
+// ─── closed screen ───────────────────────────────────────────────────────────
+
+function ClosedScreen() {
+  const [countdown, setCountdown] = useState('');
+  useEffect(() => {
+    const tick = () => {
+      const diff = nextOpenTime() - Date.now();
+      setCountdown(formatCountdown(diff));
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div style={{
+      minHeight:'100vh',
+      display:'flex',
+      flexDirection:'column',
+      alignItems:'center',
+      justifyContent:'center',
+      textAlign:'center',
+      padding:24,
+    }}>
+      <div style={{
+        width:80, height:80,
+        borderRadius:'50%',
+        background:'rgba(255,255,255,0.05)',
+        display:'flex',
+        alignItems:'center',
+        justifyContent:'center',
+        marginBottom:28,
+        fontSize:34,
+      }}>
+        🌙
+      </div>
+      <h2 style={{
+        fontFamily:"'DM Sans', sans-serif",
+        fontWeight:600,
+        fontSize:22,
+        color:'white',
+        margin:'0 0 8px',
+      }}>
+        健身房已打烊
+      </h2>
+      <p style={{ color:'rgba(255,255,255,0.4)', margin:'0 0 32px', fontSize:14 }}>
+        營業時間 06:00 – 22:00
+      </p>
+      <div style={{
+        background:'rgba(255,255,255,0.05)',
+        border:'1px solid rgba(255,255,255,0.08)',
+        borderRadius:16,
+        padding:'20px 36px',
+      }}>
+        <div style={{ color:'rgba(255,255,255,0.4)', fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:10 }}>
+          距明日開門
+        </div>
+        <div style={{
+          fontFamily:"'DM Mono', monospace",
+          fontSize:36,
+          fontWeight:500,
+          color:'white',
+          letterSpacing:'0.05em',
+        }}>
+          {countdown}
+        </div>
+      </div>
+      <a
+        href="https://www.daansports.com.tw"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          marginTop:40,
+          display:'inline-flex',
+          alignItems:'center',
+          gap:8,
+          color:'rgba(255,255,255,0.35)',
+          fontSize:12,
+          textDecoration:'none',
+          letterSpacing:'0.05em',
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        daansports.com.tw
+      </a>
+    </div>
+  );
+}
+
+// ─── main app ────────────────────────────────────────────────────────────────
+
+const POLL_INTERVAL = 20_000; // 20 seconds
+
+export default function App() {
+  const [gymData,    setGymData]    = useState(null);
+  const [history,    setHistory]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [lastFetch,  setLastFetch]  = useState(null);
+  const [error,      setError]      = useState(false);
+  const [open,       setOpen]       = useState(isGymOpen());
+  const timerRef = useRef(null);
+
+  const fetchData = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setLoading(true);
+    try {
+      const bust = `?v=${Date.now()}`;
+      const [rd, rh] = await Promise.all([
+        fetch(`./data.json${bust}`),
+        fetch(`./history.json${bust}`),
+      ]);
+      const data = await rd.json();
+      const hist = await rh.json();
+      setGymData(data);
+      setHistory(Array.isArray(hist) ? hist : []);
+      setLastFetch(new Date());
+      setError(false);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Initial load + polling
+  useEffect(() => {
+    fetchData(true);
+    // Recheck open/closed every minute
+    const clockTick = setInterval(() => setOpen(isGymOpen()), 60_000);
+    return () => clearInterval(clockTick);
+  }, [fetchData]);
+
+  // Only poll when gym is open
+  useEffect(() => {
+    if (open) {
+      timerRef.current = setInterval(() => fetchData(false), POLL_INTERVAL);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [open, fetchData]);
+
+  if (!open) return <ClosedScreen />;
+
+  const gym   = gymData?.gym;
+  const level = gym ? getOccupancyLevel(gym.current, gym.max) : null;
+  const accentColor = !level ? '#6366f1'
+    : level.key === 'low'  ? '#22c55e'
+    : level.key === 'mid'  ? '#f59e0b'
+    :                        '#ef4444';
+
+  // Thin history for chart if too many points
+  const chartData = history.length > 120
+    ? history.filter((_, i) => i % Math.ceil(history.length / 120) === 0)
+    : history;
+
+  const busyHour = history.length > 2
+    ? (() => {
+        const byHour = {};
+        history.forEach(p => {
+          const h = new Date(p.timestamp).getHours();
+          byHour[h] = byHour[h] ? (byHour[h] + p.current) / 2 : p.current;
+        });
+        const peak = Object.entries(byHour).sort((a,b) => b[1]-a[1])[0];
+        return peak ? `${peak[0]}:00` : null;
+      })()
+    : null;
+
+  return (
+    <>
+      {/* ── global styles ─────────────────────────────────────────────── */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+          background: #0a0a0f;
+          color: white;
+          font-family: 'DM Sans', sans-serif;
+          min-height: 100vh;
+        }
+
+        @keyframes ping {
+          75%, 100% { transform: scale(2); opacity: 0; }
+        }
+        @keyframes fadeUp {
+          from { opacity:0; transform: translateY(16px); }
+          to   { opacity:1; transform: translateY(0); }
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes shimmer {
+          from { background-position: -400px 0; }
+          to   { background-position:  400px 0; }
+        }
+
+        .card {
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+          border-radius: 20px;
+          animation: fadeUp 0.5s ease both;
+        }
+        .card:hover {
+          border-color: rgba(255,255,255,0.12);
+          transition: border-color 0.2s;
+        }
+
+        .skeleton {
+          background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.06) 75%);
+          background-size: 400px 100%;
+          animation: shimmer 1.4s infinite;
+          border-radius: 8px;
+        }
+
+        .spin { animation: spin 1s linear infinite; }
+
+        .refresh-btn {
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
+          padding: 10px 14px;
+          color: rgba(255,255,255,0.7);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-family: 'DM Sans', sans-serif;
+          font-size: 13px;
+          transition: background 0.15s, transform 0.1s;
+        }
+        .refresh-btn:hover  { background: rgba(255,255,255,0.1); }
+        .refresh-btn:active { transform: scale(0.96); }
+        .refresh-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        a { color: inherit; }
+      `}</style>
+
+      {/* ── layout ────────────────────────────────────────────────────── */}
+      <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 20px 60px' }}>
+
+        {/* header */}
+        <header style={{
+          display:'flex', justifyContent:'space-between', alignItems:'flex-start',
+          marginBottom: 36,
+          animation: 'fadeUp 0.4s ease',
+        }}>
+          <div>
+            <div style={{
+              display:'flex', alignItems:'center', gap:10,
+              marginBottom:6,
+            }}>
+              <PulsingDot color={accentColor} />
+              <span style={{
+                fontSize:11, letterSpacing:'0.15em', textTransform:'uppercase',
+                color: accentColor,
+                fontWeight:500,
+              }}>
+                即時監測中
+              </span>
+            </div>
+            <h1 style={{
+              fontFamily:"'DM Sans', sans-serif",
+              fontWeight:600,
+              fontSize:'clamp(22px, 5vw, 30px)',
+              letterSpacing:'-0.02em',
+              lineHeight:1.15,
+            }}>
+              大安運動中心
+              <span style={{ color:'rgba(255,255,255,0.3)', fontWeight:400 }}> · 健身房</span>
+            </h1>
+          </div>
+
+          <button
+            className="refresh-btn"
+            onClick={() => fetchData(true)}
+            disabled={loading}
+            title="手動更新"
+          >
+            <svg
+              className={loading ? 'spin' : ''}
+              width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            >
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+            更新
+          </button>
+        </header>
+
+        {/* ── main grid ─────────────────────────────────────────────────── */}
+        <div style={{
+          display:'grid',
+          gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr)',
+          gap:16,
+          marginBottom:16,
+        }}>
+          {/* ─ occupancy card ─ */}
+          <div className="card" style={{ padding:28, animationDelay:'0.05s' }}>
+            <div style={{
+              fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase',
+              color:'rgba(255,255,255,0.35)',
+              marginBottom:20,
+            }}>
+              目前人數
+            </div>
+
+            {loading && !gym ? (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:16, padding:'20px 0' }}>
+                <div className="skeleton" style={{ width:160, height:160, borderRadius:'50%' }} />
+                <div className="skeleton" style={{ width:80, height:16 }} />
+              </div>
+            ) : error ? (
+              <div style={{ textAlign:'center', color:'rgba(255,255,255,0.3)', padding:'32px 0', fontSize:13 }}>
+                同步失敗，稍後重試
+              </div>
+            ) : gym ? (
+              <OccupancyRing current={gym.current} max={gym.max} size={180} />
+            ) : null}
+
+            {/* last sync */}
+            {lastFetch && (
+              <div style={{
+                marginTop:20,
+                display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+                fontSize:11, color:'rgba(255,255,255,0.25)',
+              }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                {lastFetch.toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false })}
+              </div>
+            )}
+          </div>
+
+          {/* ─ chart card ─ */}
+          <div className="card" style={{ padding:28, animationDelay:'0.1s' }}>
+            <div style={{
+              display:'flex', justifyContent:'space-between', alignItems:'flex-start',
+              marginBottom:20,
+            }}>
+              <div>
+                <div style={{
+                  fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase',
+                  color:'rgba(255,255,255,0.35)',
+                  marginBottom:4,
+                }}>
+                  人流趨勢
+                </div>
+                <div style={{ fontSize:13, color:'rgba(255,255,255,0.5)' }}>
+                  近 7 日歷史記錄
+                </div>
+              </div>
+              {busyHour && (
+                <div style={{
+                  background:'rgba(239,68,68,0.12)',
+                  border:'1px solid rgba(239,68,68,0.2)',
+                  borderRadius:8,
+                  padding:'5px 10px',
+                  fontSize:11,
+                  color:'#fca5a5',
+                }}>
+                  尖峰 {busyHour}
+                </div>
+              )}
+            </div>
+
+            {chartData.length < 3 ? (
+              <div style={{
+                height:220,
+                display:'flex', flexDirection:'column',
+                alignItems:'center', justifyContent:'center',
+                color:'rgba(255,255,255,0.2)',
+                fontSize:13, gap:8,
+              }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.4">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                </svg>
+                正在累積數據…
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={chartData} margin={{ top:4, right:4, left:-28, bottom:0 }}>
+                  <defs>
+                    <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={accentColor} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={accentColor} stopOpacity={0}   />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    hide={chartData.length > 60}
+                    axisLine={false} tickLine={false}
+                    tick={{ fontSize:10, fill:'rgba(255,255,255,0.25)', fontFamily:"'DM Mono', monospace" }}
+                  />
+                  <YAxis
+                    axisLine={false} tickLine={false}
+                    tick={{ fontSize:10, fill:'rgba(255,255,255,0.25)', fontFamily:"'DM Mono', monospace" }}
+                    domain={[0, gym?.max || 80]}
+                  />
+                  <Tooltip content={<CustomTooltip />} cursor={{ stroke:'rgba(255,255,255,0.1)', strokeWidth:1 }} />
+                  <ReferenceLine
+                    y={gym ? Math.round(gym.max * 0.75) : 60}
+                    stroke="rgba(239,68,68,0.25)"
+                    strokeDasharray="4 4"
+                    label={{ value:'擁擠線', position:'right', fill:'rgba(239,68,68,0.45)', fontSize:10 }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="current"
+                    stroke={accentColor}
+                    strokeWidth={2}
+                    fill="url(#grad)"
+                    dot={false}
+                    activeDot={{ r:4, fill:accentColor, strokeWidth:0 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+
+        {/* ── bottom stat row ─────────────────────────────────────────────── */}
+        {gym && (
+          <div style={{
+            display:'grid',
+            gridTemplateColumns:'repeat(3, minmax(0,1fr))',
+            gap:12,
+            animation:'fadeUp 0.5s ease both',
+            animationDelay:'0.15s',
+          }}>
+            {[
+              {
+                label:'使用率',
+                value:`${Math.round((gym.current / gym.max) * 100)}%`,
+                sub: level?.label,
+                color: accentColor,
+              },
+              {
+                label:'剩餘名額',
+                value: gym.max - gym.current,
+                sub: '人可入場',
+                color: 'white',
+              },
+              {
+                label:'容留上限',
+                value: gym.max,
+                sub: '人',
+                color: 'rgba(255,255,255,0.5)',
+              },
+            ].map(({ label, value, sub, color }) => (
+              <div key={label} className="card" style={{ padding:'20px 22px', animationDelay:'0.18s' }}>
+                <div style={{ fontSize:11, letterSpacing:'0.1em', textTransform:'uppercase', color:'rgba(255,255,255,0.3)', marginBottom:10 }}>
+                  {label}
+                </div>
+                <div style={{
+                  fontFamily:"'DM Mono', monospace",
+                  fontSize:28,
+                  fontWeight:500,
+                  color,
+                  lineHeight:1,
+                  marginBottom:6,
+                }}>
+                  {value}
+                </div>
+                <div style={{ fontSize:12, color:'rgba(255,255,255,0.3)' }}>
+                  {sub}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── info banner ──────────────────────────────────────────────────── */}
+        <div style={{
+          marginTop:12,
+          background:'rgba(255,255,255,0.02)',
+          border:'1px solid rgba(255,255,255,0.05)',
+          borderRadius:16,
+          padding:'16px 22px',
+          display:'flex',
+          alignItems:'center',
+          gap:14,
+          fontSize:13,
+          color:'rgba(255,255,255,0.3)',
+          animation:'fadeUp 0.5s ease both',
+          animationDelay:'0.2s',
+        }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:0.5 }}>
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          每分鐘自動同步一次，前端每 20 秒更新顯示。尖峰時段通常為 18:00 – 21:00，建議避開。
+        </div>
+
+        {/* ── footer ────────────────────────────────────────────────────────── */}
+        <footer style={{
+          marginTop:48,
+          display:'flex',
+          justifyContent:'center',
+          animation:'fadeUp 0.5s ease both',
+          animationDelay:'0.25s',
+        }}>
+          <a
+            href="https://www.daansports.com.tw"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display:'inline-flex',
+              alignItems:'center',
+              gap:10,
+              padding:'12px 22px',
+              background:'rgba(255,255,255,0.04)',
+              border:'1px solid rgba(255,255,255,0.08)',
+              borderRadius:14,
+              textDecoration:'none',
+              color:'rgba(255,255,255,0.5)',
+              fontSize:13,
+              transition:'background 0.15s, color 0.15s, border-color 0.15s',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+              e.currentTarget.style.color = 'rgba(255,255,255,0.8)';
+              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+              e.currentTarget.style.color = 'rgba(255,255,255,0.5)';
+              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+            }}
+          >
+            {/* globe icon */}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            大安運動中心官網
+            {/* external arrow */}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity:0.5 }}>
+              <line x1="7" y1="17" x2="17" y2="7"/>
+              <polyline points="7 7 17 7 17 17"/>
+            </svg>
+          </a>
+        </footer>
+
+      </div>
+    </>
+  );
+}

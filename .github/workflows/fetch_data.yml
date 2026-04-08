@@ -1,0 +1,88 @@
+name: Gym Data Fetcher
+
+on:
+  schedule:
+    - cron: '* * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if gym is open (06:00–22:00 Taipei time)
+        id: check_hours
+        run: |
+          HOUR=$(TZ="Asia/Taipei" date +"%H" | sed 's/^0//')
+          echo "Taipei hour: $HOUR"
+          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -lt 22 ]; then
+            echo "open=true" >> $GITHUB_OUTPUT
+          else
+            echo "open=false" >> $GITHUB_OUTPUT
+            echo "Gym is closed. Skipping fetch."
+          fi
+
+      - name: Fetch and record gym data
+        if: steps.check_hours.outputs.open == 'true'
+        run: |
+          RAW_DATA=$(curl -sL "https://www.daansports.com.tw/zh_TW/onsitenum" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+          CURRENT=$(echo "$RAW_DATA" | sed -n 's/.*健身房[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p' | head -1)
+          MAX=$(echo "$RAW_DATA" | sed -n 's/.*健身房.*人\s*\/\s*容留[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p' | head -1)
+
+          if [ -z "$MAX" ]; then
+            MAX=$(echo "$RAW_DATA" | sed -n 's/.*健身房.*容留[^0-9]*\([0-9]\+\)[^0-9]*人.*/\1/p' | head -1)
+          fi
+
+          if [ -z "$CURRENT" ] || [ -z "$MAX" ]; then
+            echo "Parse failed — site may have changed structure. Skipping."
+            exit 0
+          fi
+
+          TIMESTAMP=$(TZ="Asia/Taipei" date -u +"%Y-%m-%dT%H:%M:%S+08:00")
+          DATE_LABEL=$(TZ="Asia/Taipei" date +"%m/%d %H:%M")
+
+          echo "{\"gym\": {\"current\": $CURRENT, \"max\": $MAX}, \"timestamp\": \"$TIMESTAMP\", \"open\": true}" > public/data.json
+
+          if [ ! -f public/history.json ] || [ ! -s public/history.json ]; then
+            echo "[]" > public/history.json
+          fi
+
+          # Keep 7 days = 960 records at 1-min interval during 16 open hours/day
+          jq --arg cur "$CURRENT" --arg time "$TIMESTAMP" --arg lbl "$DATE_LABEL" \
+             '. + [{current: ($cur|tonumber), timestamp: $time, label: $lbl}] | .[-6720:]' \
+             public/history.json > public/history.tmp && mv public/history.tmp public/history.json
+
+          echo "Logged: current=$CURRENT, max=$MAX at $TIMESTAMP"
+
+      - name: Write closed status during off-hours
+        if: steps.check_hours.outputs.open == 'false'
+        run: |
+          TIMESTAMP=$(TZ="Asia/Taipei" date -u +"%Y-%m-%dT%H:%M:%S+08:00")
+          # Only update if currently says open (avoids unnecessary commits)
+          if [ -f public/data.json ]; then
+            CURRENTLY_OPEN=$(jq -r '.open // true' public/data.json)
+            if [ "$CURRENTLY_OPEN" = "true" ]; then
+              jq '.open = false' public/data.json > public/data.tmp && mv public/data.tmp public/data.json
+            else
+              echo "Already marked closed. No commit needed."
+              exit 0
+            fi
+          fi
+
+      - name: Commit data changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add public/data.json public/history.json
+          if git diff --staged --quiet; then
+            echo "No changes."
+          else
+            git commit -m "data: update gym logs [skip ci]"
+            git push origin main
+          fi
