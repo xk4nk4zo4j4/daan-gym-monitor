@@ -84,5 +84,10 @@ jobs:
             echo "No changes."
           else
             git commit -m "data: update gym logs [skip ci]"
-            git push origin main
+            # Retry up to 3 times in case of concurrent workflow conflicts
+            for i in 1 2 3; do
+              git pull origin main --rebase && git push origin main && break
+              echo "Push attempt $i failed, retrying..."
+              sleep 3
+            done
           fi
