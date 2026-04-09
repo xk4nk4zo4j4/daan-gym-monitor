@@ -146,17 +146,31 @@ export default function App() {
       // 1. Fetch history from GitHub (or local)
       const rhP = fetch(`${BASE}/history.json${bust}`).then(r => r.json()).catch(() => []);
       
-      // 2. Try fetching real-time data from daansports directly via CORS proxy
+      // 2. Try fetching real-time data from daansports directly via CORS proxies
       let currentVal = null, maxVal = null;
       if (!isDev) {
         try {
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent('https://www.daansports.com.tw/zh_TW/onsitenum?v=' + Date.now())}`;
-          const rawHtml = await fetch(proxyUrl).then(r => r.text());
+          const targetUrl = encodeURIComponent('https://www.daansports.com.tw/zh_TW/onsitenum?v=' + Date.now());
+          const proxies = [
+            `https://api.allorigins.win/raw?url=${targetUrl}`,
+            `https://api.codetabs.com/v1/proxy?quest=${targetUrl}`,
+            `https://corsproxy.io/?url=${targetUrl}`
+          ];
+          
+          const rawHtml = await Promise.any(
+            proxies.map(url => fetch(url, { signal: AbortSignal.timeout(8000) }).then(r => {
+              if (!r.ok) throw new Error('Proxy error');
+              return r.text();
+            }))
+          );
+          
           const curMatch = rawHtml.match(/健身房[^0-9]*([0-9]+)[^0-9]*人/);
           const maxMatch = rawHtml.match(/健身房.*容留[^0-9]*([0-9]+)[^0-9]*人/);
           if (curMatch) currentVal = parseInt(curMatch[1], 10);
           if (maxMatch) maxVal = parseInt(maxMatch[1], 10);
-        } catch (e) { console.warn('CORS proxy fetch failed:', e); }
+        } catch (e) {
+          console.warn('All CORS proxies failed or timed out:', e);
+        }
       }
 
       // 3. Fetch data.json as fallback (and for dev)
@@ -189,7 +203,7 @@ export default function App() {
   }, [fetchData]);
 
   useEffect(() => {
-    if (open) timer.current = setInterval(() => fetchData(false), POLL_MS);
+    if (open) timer.current = setInterval(() => fetchData(true), POLL_MS);
     else      clearInterval(timer.current);
     return () => clearInterval(timer.current);
   }, [open, fetchData]);
@@ -353,7 +367,7 @@ export default function App() {
           <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:2, opacity:0.5 }}>
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          每分鐘自動同步一次，前端每 20 秒更新顯示。尖峰時段通常為 18:00 – 21:00，建議避開。
+          前端系統每 20 秒自動更新即時人數。{busyHour ? `根據歷史數據分析，尖峰時段約為 ${parseInt(busyHour)}:00 – ${parseInt(busyHour) + 2}:00，建議避開。` : ''}
         </div>
 
         {/* footer */}
