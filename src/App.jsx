@@ -139,15 +139,47 @@ export default function App() {
   const fetchData = useCallback(async (spinner = false) => {
     if (spinner) setLoading(true);
     try {
-      const BASE = 'https://raw.githubusercontent.com/xk4nk4zo4j4/daan-gym-monitor/main/public';
+      const isDev = import.meta.env?.DEV;
+      const BASE = isDev ? '.' : 'https://raw.githubusercontent.com/xk4nk4zo4j4/daan-gym-monitor/main/public';
       const bust = `?v=${Date.now()}`;
-      const [rd, rh] = await Promise.all([fetch(`${BASE}/data.json${bust}`), fetch(`${BASE}/history.json${bust}`)]);
-      setGymData(await rd.json());
-      setHistory(await rh.json().then(d => Array.isArray(d) ? d : []));
+      
+      // 1. Fetch history from GitHub (or local)
+      const rhP = fetch(`${BASE}/history.json${bust}`).then(r => r.json()).catch(() => []);
+      
+      // 2. Try fetching real-time data from daansports directly via CORS proxy
+      let currentVal = null, maxVal = null;
+      if (!isDev) {
+        try {
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent('https://www.daansports.com.tw/zh_TW/onsitenum?v=' + Date.now())}`;
+          const rawHtml = await fetch(proxyUrl).then(r => r.text());
+          const curMatch = rawHtml.match(/健身房[^0-9]*([0-9]+)[^0-9]*人/);
+          const maxMatch = rawHtml.match(/健身房.*容留[^0-9]*([0-9]+)[^0-9]*人/);
+          if (curMatch) currentVal = parseInt(curMatch[1], 10);
+          if (maxMatch) maxVal = parseInt(maxMatch[1], 10);
+        } catch (e) { console.warn('CORS proxy fetch failed:', e); }
+      }
+
+      // 3. Fetch data.json as fallback (and for dev)
+      const dataP = fetch(`${BASE}/data.json${bust}`).then(r => r.json());
+      
+      const [historyData, githubData] = await Promise.all([rhP, dataP]);
+      
+      // 4. Combine real-time data if available, else fallback to github's parsed data
+      const finalGym = {
+        current: currentVal !== null ? currentVal : githubData?.gym?.current,
+        max: maxVal !== null ? maxVal : githubData?.gym?.max || 80
+      };
+
+      setGymData({ gym: finalGym });
+      setHistory(Array.isArray(historyData) ? historyData : []);
       setLastFetch(new Date());
       setError(false);
-    } catch { setError(true); }
-    finally  { setLoading(false); }
+    } catch (err) {
+      console.error(err);
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
