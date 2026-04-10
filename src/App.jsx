@@ -214,9 +214,21 @@ export default function App() {
   const level  = gym ? getLevel(gym.current, gym.max) : null;
   const accent = level?.color ?? '#6366f1';
 
-  const chartData = history.length > 120
+  const chartData = (history.length > 120
     ? history.filter((_, i) => i % Math.ceil(history.length / 120) === 0)
-    : history;
+    : history).map(item => {
+      const d = item.timestamp ? new Date(item.timestamp) : null;
+      let newLabel = item.label;
+      if (d && !isNaN(d.getTime())) {
+        const days = ['日', '一', '二', '三', '四', '五', '六'];
+        const dayStr = days[d.getDay()];
+        const parts = item.label.split(' ');
+        if (parts.length === 2) {
+          newLabel = `${parts[0]}(${dayStr}) ${parts[1]}`;
+        }
+      }
+      return { ...item, label: newLabel };
+    });
 
   const busyHour = (() => {
     if (history.length < 3) return null;
@@ -361,6 +373,29 @@ export default function App() {
             ))}
           </div>
         )}
+
+        {/* welfare info */}
+        <div style={{ background:'rgba(236,72,153,0.05)', border:'1px solid rgba(236,72,153,0.15)', borderRadius:16, padding:'16px 20px', display:'flex', flexDirection:'column', gap:10, animation:'fadeUp 0.5s ease both', animationDelay:'0.18s', marginBottom:14 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, color:'#f472b6', fontWeight:500, fontSize:13, letterSpacing:'0.05em' }}>
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+            </svg>
+            公益時段 (免費使用)
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))', gap:12, marginTop:2 }}>
+             <div>
+                <div style={{ color:'rgba(255,255,255,0.4)', fontSize:12, marginBottom:4 }}>週一至週五</div>
+                <div style={{ fontFamily:"'DM Mono',monospace", fontSize:14, color:'rgba(255,255,255,0.85)', lineHeight:1.6 }}>08:00 – 10:00<br/>14:00 – 16:00</div>
+             </div>
+             <div>
+                <div style={{ color:'rgba(255,255,255,0.4)', fontSize:12, marginBottom:4 }}>週六至週日</div>
+                <div style={{ fontFamily:"'DM Mono',monospace", fontSize:14, color:'rgba(255,255,255,0.85)' }}>08:00 – 10:00</div>
+             </div>
+          </div>
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.3)', marginTop:4, lineHeight:1.6 }}>
+            * 65歲以上高齡、55歲以上原住民及低收入市民可免費使用。<br/>* 國定假日及寒/暑假期間，下午公益時段暫停實施。
+          </div>
+        </div>
 
         {/* info banner */}
         <div style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.05)', borderRadius:14, padding:'14px 18px', display:'flex', alignItems:'flex-start', gap:12, fontSize:12, color:'rgba(255,255,255,0.28)', lineHeight:1.6, animation:'fadeUp 0.5s ease both', animationDelay:'0.2s', marginBottom:10 }}>
