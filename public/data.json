@@ -1,1 +1,8 @@
-{"gym": {"current": 32, "max": 80}, "timestamp": "2026-07-02T12:50:45+08:00", "open": true}
+{
+  "gym": {
+    "current": 32,
+    "max": 80
+  },
+  "timestamp": "2026-07-02T12:50:45+08:00",
+  "open": false
+}
